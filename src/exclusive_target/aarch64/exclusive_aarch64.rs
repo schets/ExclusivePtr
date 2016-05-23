@@ -30,25 +30,6 @@ unsafe fn load_exc(ptr: *const u64, ord: Ordering) {
 }
 
 #[inline(always)]
-unsafe fn load_from(ptr: *const u64, ord: Ordering) -> u64 {
-    let ptr: *const AtomicUsize = mem::transmute(ptr);
-    (&*ptr).load(ord) as u64
-}
-
-#[inline(always)]
-unsafe fn store_to(ptr: *const u64, n: u64, ord: Ordering) {
-    let ptr: *const AtomicUsize = mem::transmute(ptr);
-    (&*ptr).store(n as usize, ord)
-}
-
-#[inline(always)]
-unsafe fn exchange_to(ptr: *const u64, n: u64, ord: Ordering) -> u64 {
-    let ptr: *const AtomicUsize = mem::transmute(ptr);
-    (&*ptr).swap(n as usize, ord) as u64
-}
-
-
-#[inline(always)]
 unsafe fn store_exc(ptr: *const u64, val: u64, ord: Ordering,
                     rord: Ordering, reload: bool)
                     -> (bool, u64) {
@@ -76,6 +57,30 @@ unsafe fn store_exc(ptr: *const u64, val: u64, ord: Ordering,
     else {
         (false, if reload { load_exc(ptr, rord) } else { mem::uninitialized() })
     }
+}
+
+#[inline(always)]
+unsafe fn load_from(ptr: *const u64, ord: Ordering) -> u64 {
+    let ptr: *const AtomicUsize = mem::transmute(ptr);
+    (&*ptr).load(ord) as u64
+}
+
+#[inline(always)]
+unsafe fn store_to(ptr: *const u64, n: u64, ord: Ordering) {
+    let ptr: *const AtomicUsize = mem::transmute(ptr);
+    (&*ptr).store(n as usize, ord)
+}
+
+#[inline(always)]
+unsafe fn exchange_to(ptr: *const u64, n: u64, ord: Ordering) -> u64 {
+    let ptr: *const AtomicUsize = mem::transmute(ptr);
+    (&*ptr).swap(n as usize, ord) as u64
+}
+
+#[inline(always)]
+unsafe fn cas_to(ptr: *const u64, o: u64, n: u64, ord: Ordering) -> u64 {
+    let ptr: *const AtomicUsize = mem::transmute(ptr);
+    (&*ptr).compare_and_swap(o as usize, n as usize, ord) as u64
 }
 
 pub trait IsU64 {
@@ -160,13 +165,23 @@ impl<T: IsU64> ExclusiveData<T> {
         unsafe { store_to(&self.data, val.to_u64(), ord) };
     }
 
-    /// Stores directly to the pointer without updating the counter
+    /// Swaps directly to the pointer without updating the counter
     ///
     /// This function can still leave one vulnerable to the ABA problem,
     /// But is useful when only used to store to say a null value.
     /// Be careful when using, this must always cause a store_conditional to fail
-    pub fn exchange_direct(&self, val: T, ord: Ordering) -> T {
+    pub fn swap_direct(&self, val: T, ord: Ordering) -> T {
         unsafe { T::from_u64(exchange_to(&self.data, val.to_u64(), ord)) }
+    }
+
+    /// Cas's directly to the pointer without updating the counter
+    ///
+    /// This function can still leave one vulnerable to the ABA problem,
+    /// But is useful when only used to store to say a null value.
+    /// Be careful when using, this must always cause a store_conditional to fail
+    pub fn cas_direct(&self, old: Tval: T, ord: Ordering) -> T {
+        unsafe { T::from_u64(cas_to(&self.data, old.to_u64(),
+                                    val.to_u64(), ord)) }
     }
 
     /// Performs an exclusive load on the pointer
