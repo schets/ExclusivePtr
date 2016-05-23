@@ -21,7 +21,6 @@ unsafe fn load_exc(ptr: *const u64, ord: Ordering) {
             asm!("ldaxr %1, [%0]"
                 : "=r" (rval)
                 : "r" (ptr)
-                : "memory"
                 : "volatile")
         }
 
@@ -72,7 +71,7 @@ unsafe fn store_exc(ptr: *const u64, val: u64, ord: Ordering,
         Acquire | AcqRel => panic("Invalid Store Ordering"),
     }
     if succ {
-        (true, 0)
+        (true, mem::uninitialized() )
     }
     else {
         (false, if reload { load_exc(ptr, rord) } else { mem::uninitialized() })

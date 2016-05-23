@@ -1,4 +1,4 @@
 
-mod exclusive_64;
+mod exclusive_aarch64;
 
-pub use self::exclusive_64::*;
+pub use self::exclusive_aarch64::*;
