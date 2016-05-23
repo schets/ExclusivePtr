@@ -211,6 +211,18 @@ impl<'a, T: Isu32> LinkedData<'a, T> {
             }
         }
     }
+
+    /// Performs a conditional store on the pointer, conditional on no modifications occurring
+    ///
+    /// If the pointer is modified by a different store_conditional in between the load_linked
+    /// and store_conditional, this will always fail. This is stronger the cas
+    /// since cas can succedd when modifications have occured as long as the end
+    /// result is the same. However, this will always fail in a scenario where cas would fail.
+    pub fn try_store_conditional(self, val: T, _: Ordering) -> bool {
+        unsafe {
+            cas_tagged(self.ptr, self.data, val.to_u32()).0
+        }
+    }
 }
 
 unsafe impl<T: Isu32> Send for ExclusiveData<T> {}
@@ -228,72 +240,3 @@ pub type LinkedPtr<'a, T> = LinkedData<'a, *mut T>;
 pub type LinkedUsize<'a> = LinkedData<'a, usize>;
 pub type LinkedIsize<'a> = LinkedData<'a, isize>;
 pub type LinkedBool<'a> = LinkedData<'a, bool>;
-
-#[cfg(test)]
-mod test {
-    use scope;
-    use super::*;
-    use std::ptr;
-    use std::sync::atomic::Ordering::{Relaxed};
-    #[test]
-    fn test_cas () {
-        let mut val: u32 = 0;
-        let eptr = ExclusivePtr::<u32>::new(ptr::null_mut());
-        let ll = eptr.load_linked(Relaxed);
-        assert_eq!(eptr.load(Relaxed), ptr::null_mut());
-        assert_eq!(ll.store_conditional(&mut val, Relaxed).is_none(), true);
-        assert_eq!(eptr.load(Relaxed), &mut val as *mut u32);
-    }
-
-    #[test]
-    fn test_cas_fail () {
-        let mut val: u32 = 0;
-        let mut val2: u32 = 0;
-        let eptr = ExclusivePtr::<u32>::new(ptr::null_mut());
-        let ll = eptr.load_linked(Relaxed);
-        assert_eq!(eptr.load(Relaxed), ptr::null_mut());
-        eptr.store_direct(&mut val2, Relaxed);
-        assert_eq!(eptr.load(Relaxed), &mut val2 as *mut u32);
-        assert_eq!(ll.store_conditional(&mut val, Relaxed).is_some(), true);
-        assert_eq!(eptr.load(Relaxed), &mut val2 as *mut u32);
-    }
-
-    #[test]
-    fn test_cas_fail_xchg () {
-        let mut val: u32 = 0;
-        let mut val2: u32 = 0;
-        let eptr = ExclusivePtr::<u32>::new(ptr::null_mut());
-        let ll = eptr.load_linked(Relaxed);
-        assert_eq!(eptr.load(Relaxed), ptr::null_mut());
-        assert_eq!(eptr.exchange_direct(&mut val2, Relaxed), ptr::null_mut());
-        assert_eq!(eptr.load(Relaxed), &mut val2 as *mut u32);
-        assert_eq!(ll.store_conditional(&mut val, Relaxed).is_some(), true);
-        assert_eq!(eptr.load(Relaxed), &mut val2 as *mut u32);
-    }
-
-    #[test]
-    fn test_mt_cas() {
-        let num_run: usize = 1000000;
-        let num_thread: usize = 4;
-        let val = ExclusiveUsize::new(0);
-
-        scope(|scope| {
-            for _ in 0..num_thread {
-                scope.spawn(||{
-                    for _ in 0..num_run {
-                        let mut ll = val.load_linked(Relaxed);
-                        loop {
-                            let next = ll.get() + 1;
-                            match ll.store_conditional(next, Relaxed) {
-                                None => break,
-                                Some(nll) => ll = nll,
-                            }
-                        }
-                    }
-                });
-            }
-        });
-
-        assert_eq!(val.load(Relaxed), num_run * num_thread);
-    }
-}
