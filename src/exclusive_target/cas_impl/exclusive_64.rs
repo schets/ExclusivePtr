@@ -5,141 +5,170 @@ use std::marker::PhantomData;
 
 use std::sync::atomic::{Ordering, AtomicUsize};
 
+#[cfg(target_pointer_width = "64")]
+mod multi_size {
+
+    pub const PTR_MOD: usize = 15;
+
+    #[inline(always)]
+    pub unsafe fn cas_tagged(ptr: *const usize, old: (usize, usize), nval: usize)
+                         -> (bool, (usize, usize)) {
+        let mut val: usize = old.0;
+        let mut counter: usize = old.1;
+        let ncounter: usize = counter.wrapping_add(1);
+        let new = nval;
+        let succ: bool;
+        asm!("lock cmpxchg16b ($7)\n\t
+          sete $0\n\t"
+          : "=r" (succ), "={rax}" (val), "={rdx}" (counter)
+          : "1"(val), "2"(counter), "{rbx}"(new), "{rcx}"(ncounter), "r"(ptr)
+          : "memory"
+          : "volatile");
+        // Returned values only matter if succ is false,
+        // in which case thee right ones are loaded into memory
+        (succ, (val, counter))
+    }
+}
+
+#[cfg(target_pointer_width = "32")]
+mod multi_size {
+
+    pub const PRT_MOD: usize = 7;
+
+    #[inline(always)]
+    pub unsafe fn cas_tagged(ptr: *const usize, old: (usize, usize), nval: usize)
+                         -> (bool, (usize, usize)) {
+        let mut val: usize = old.0;
+        let mut counter: usize = old.1;
+        let ncounter: usize = counter.wrapping_add(1);
+        let new = nval;
+        let succ: bool;
+        asm!("lock cmpxchg16b ($7)\n\t
+          sete $0\n\t"
+          : "=r" (succ), "={rax}" (val), "={rdx}" (counter)
+          : "1"(val), "2"(counter), "{rbx}"(new), "{rcx}"(ncounter), "r"(ptr)
+          : "memory"
+          : "volatile");
+        // Returned values only matter if succ is false,
+        // in which case thee right ones are loaded into memory
+        (succ, (val, counter))
+    }
+}
+
+use self::multi_size::*;
+
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 struct Llsc {
-    val: u32,
-    counter: u32,
-    extra: u32, //we adjust which is actually the real one due to alignment
+    val: usize,
+    counter: usize,
+    extra: usize, //we adjust which is actually the real one due to alignment
 }
 
 #[inline(always)]
-unsafe fn load_from(ptr: *const u32, ord: Ordering) -> u32 {
+unsafe fn load_from(ptr: *const usize, ord: Ordering) -> usize {
     let ptr: *const AtomicUsize = mem::transmute(ptr);
-    (&*ptr).load(ord) as u32
+    (&*ptr).load(ord)
 }
 
 #[inline(always)]
-unsafe fn store_to(ptr: *const u32, n: u32, ord: Ordering) {
+unsafe fn store_to(ptr: *const usize, n: usize, ord: Ordering) {
     let ptr: *const AtomicUsize = mem::transmute(ptr);
-    (&*ptr).store(n as usize, ord)
+    (&*ptr).store(n, ord)
 }
 
 #[inline(always)]
-unsafe fn exchange_to(ptr: *const u32, n: u32, ord: Ordering) -> u32 {
+unsafe fn exchange_to(ptr: *const usize, n: usize, ord: Ordering) -> usize {
     let ptr: *const AtomicUsize = mem::transmute(ptr);
-    (&*ptr).swap(n as usize, ord) as u32
+    (&*ptr).swap(n, ord)
 }
 
-
-#[inline(always)]
-unsafe fn cas_tagged(ptr: *const u32, old: (u32, u32), nval: u32) -> (bool, (u32, u32)) {
-    let mut val: u32 = old.0;
-    let mut counter: u32 = old.1;
-    let ncounter: u32 = counter.wrapping_add(1);
-    let new = nval;
-    let succ: bool;
-    asm!("lock cmpxchg8b ($7)\n\t
-          sete $0\n\t"
-         : "=r" (succ), "={eax}" (val), "={edx}" (counter)
-         : "1"(val), "2"(counter), "{ebx}"(new), "{ecx}"(ncounter), "r"(ptr)
-         : "memory"
-         : "volatile");
-    // Returned values only matter if succ is false,
-    // in which case thee right ones are loaded into memory
-    (succ, (val, counter))
-}
-
-// All this junk is to ensure 8-byte alignment
-// generally working alignment specifiers would solve this and some
-// effecient issues, although those will be dominated by cas
 impl Llsc {
-    pub unsafe fn get_ptr(&self) -> *const u32 {
-        let addr: *const u32 = &self.counter;
-        let addr64 = addr as u32;
-        (addr64 & !7) as *const u32 // if &val is 8 byte aligned, will round down
-        // otherwise, will keep address of counter
+    pub unsafe fn get_ptr(&self) -> *const usize {
+        let addr = (&self.counter as *const usize) as usize;
+        (addr & !PTR_MOD) as *const usize
     }
 
-    pub unsafe fn get_vals(&self, ord: Ordering) -> (u32, u32) {
+    pub unsafe fn get_vals(&self, ord: Ordering) -> (usize, usize) {
         let ptr = self.get_ptr();
         (load_from(ptr, ord), *ptr.offset(1))
     }
 
-    pub unsafe fn set_val(&self, val: u32, ord: Ordering) {
+    pub unsafe fn set_val(&self, val: usize, ord: Ordering) {
         store_to(self.get_ptr(), val, ord);
     }
 
-    pub unsafe fn xchg_val(&self, val: u32, ord: Ordering) -> u32 {
+    pub unsafe fn xchg_val(&self, val: usize, ord: Ordering) -> usize {
         exchange_to(self.get_ptr(), val, ord)
     }
 }
 
-pub trait Isu32 {
-    fn from_u32(val: u32) -> Self;
-    fn to_u32(&self) -> u32;
+pub trait Isusize {
+    fn from_usize(val: usize) -> Self;
+    fn to_usize(&self) -> usize;
 }
 
-impl Isu32 for usize {
-    fn from_u32(val: u32) -> usize {
+impl Isusize for usize {
+    fn from_usize(val: usize) -> usize {
         val as usize
     }
 
-    fn to_u32(&self) -> u32 {
-        *self as u32
+    fn to_usize(&self) -> usize {
+        *self as usize
     }
 }
 
-impl Isu32 for isize {
-    fn from_u32(val: u32) -> isize {
+impl Isusize for isize {
+    fn from_usize(val: usize) -> isize {
         val as isize
     }
 
-    fn to_u32(&self) -> u32 {
-        *self as u32
+    fn to_usize(&self) -> usize {
+        *self as usize
     }
 }
 
-impl<T> Isu32 for *mut T {
+impl<T> Isusize for *mut T {
 
-    fn from_u32(val: u32) -> *mut T {
+    fn from_usize(val: usize) -> *mut T {
         val as *mut T
     }
 
-    fn to_u32(&self) -> u32 {
-        *self as u32
+    fn to_usize(&self) -> usize {
+        *self as usize
     }
 }
 
-impl Isu32 for bool {
+impl Isusize for bool {
 
-    fn from_u32(val: u32) -> bool {
+    fn from_usize(val: usize) -> bool {
         val == 0
     }
 
-    fn to_u32(&self) -> u32 {
-        *self as u32
+    fn to_usize(&self) -> usize {
+        *self as usize
     }
 }
 
-pub struct ExclusiveData<T: Isu32> {
+pub struct ExclusiveData<T: Isusize> {
     data: Llsc,
     marker: PhantomData<T>,
 }
 
-pub struct LinkedData<'a, T: 'a + Isu32> {
-    data: (u32, u32),
-    ptr: *const u32,
+pub struct LinkedData<'a, T: 'a + Isusize> {
+    data: (usize, usize),
+    ptr: *const usize,
     _borrowck: &'a ExclusiveData<T>,
 }
 
-impl<T: Isu32> ExclusiveData<T> {
+impl<T: Isusize> ExclusiveData<T> {
 
     pub fn new(val: T) -> ExclusiveData<T> {
         ExclusiveData {
             data: Llsc {
-                val: val.to_u32(),
-                counter: val.to_u32(),
+                val: val.to_usize(),
+                counter: val.to_usize(),
                 extra: 0,
             },
             marker: PhantomData,
@@ -148,7 +177,7 @@ impl<T: Isu32> ExclusiveData<T> {
 
     /// Loads the value from the pointer with the given ordering
     pub fn load(&self, ord: Ordering) -> T {
-        unsafe { T::from_u32(self.data.get_vals(ord).0) }
+        unsafe { T::from_usize(self.data.get_vals(ord).0) }
     }
 
     /// Stores directly to the pointer without updating the counter
@@ -157,7 +186,7 @@ impl<T: Isu32> ExclusiveData<T> {
     /// But is useful when only used to store to say a null value.
     /// Be careful when using, this must always cause a store_conditional to fail
     pub fn store_direct(&self, val: T, ord: Ordering) {
-        unsafe { self.data.set_val(val.to_u32(), ord) };
+        unsafe { self.data.set_val(val.to_usize(), ord) };
     }
 
     /// Stores directly to the pointer without updating the counter
@@ -166,7 +195,7 @@ impl<T: Isu32> ExclusiveData<T> {
     /// But is useful when only used to store to say a null value.
     /// Be careful when using, this must always cause a store_conditional to fail
     pub fn exchange_direct(&self, val: T, ord: Ordering) -> T {
-        unsafe { T::from_u32(self.data.xchg_val(val.to_u32(), ord)) }
+        unsafe { T::from_usize(self.data.xchg_val(val.to_usize(), ord)) }
     }
 
     /// Performs an exclusive load on the pointer
@@ -186,10 +215,10 @@ impl<T: Isu32> ExclusiveData<T> {
     }
 }
 
-impl<'a, T: Isu32> LinkedData<'a, T> {
+impl<'a, T: Isusize> LinkedData<'a, T> {
 
     pub fn get(&self) -> T {
-        T::from_u32(self.data.0)
+        T::from_usize(self.data.0)
     }
 
     /// Performs a conditional store on the pointer, conditional on no modifications occurring
@@ -200,7 +229,7 @@ impl<'a, T: Isu32> LinkedData<'a, T> {
     /// result is the same. However, this will always fail in a scenario where cas would fail.
     pub fn store_conditional(self, val: T, _: Ordering) -> Option<LinkedData<'a, T>> {
         unsafe {
-            let (succ, res) = cas_tagged(self.ptr, self.data, val.to_u32());
+            let (succ, res) = cas_tagged(self.ptr, self.data, val.to_usize());
             match succ {
                 true => None,
                 false => Some(LinkedData {
@@ -220,20 +249,20 @@ impl<'a, T: Isu32> LinkedData<'a, T> {
     /// result is the same. However, this will always fail in a scenario where cas would fail.
     pub fn try_store_conditional(self, val: T, _: Ordering) -> bool {
         unsafe {
-            cas_tagged(self.ptr, self.data, val.to_u32()).0
+            cas_tagged(self.ptr, self.data, val.to_usize()).0
         }
     }
 }
 
-unsafe impl<T: Isu32> Send for ExclusiveData<T> {}
-unsafe impl<T: Isu32> Sync for ExclusiveData<T> {}
+unsafe impl<T: Isusize> Send for ExclusiveData<T> {}
+unsafe impl<T: Isusize> Sync for ExclusiveData<T> {}
 
 pub type ExclusivePtr<T> = ExclusiveData<*mut T>;
 pub type ExclusiveUsize = ExclusiveData<usize>;
 pub type ExclusiveIsize = ExclusiveData<isize>;
 
 // This could be more efficient, by doing normal cas and packing
-// as u32. BUT! That's code bloat for the time being
+// as usize. BUT! That's code bloat for the time being
 pub type ExclusiveBool = ExclusiveData<bool>;
 
 pub type LinkedPtr<'a, T> = LinkedData<'a, *mut T>;

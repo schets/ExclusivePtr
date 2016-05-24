@@ -1,28 +1,19 @@
 #![feature(asm)]
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 mod exclusive_target {
-    mod x86_64;
+    mod cas_impl;
     //mod x86;
-    pub use self::x86_64::{ExclusivePtr, ExclusiveUsize, ExclusiveIsize, ExclusiveBool};
-    pub use self::x86_64::{LinkedPtr, LinkedUsize, LinkedIsize, LinkedBool};
+    pub use self::cas_impl::{ExclusivePtr, ExclusiveUsize, ExclusiveIsize, ExclusiveBool};
+    pub use self::cas_impl::{LinkedPtr, LinkedUsize, LinkedIsize, LinkedBool};
     pub const IS_LOCK_FREE: bool = true;
 }
 
-#[cfg(target_arch = "x86")]
+#[cfg(any(target_arch = "aarch64", target_arch = "arm", target_arch = "powerpc"))]
 mod exclusive_target {
-    mod x86;
-    //mod x86;
-    pub use self::x86::{ExclusivePtr, ExclusiveUsize, ExclusiveIsize, ExclusiveBool};
-    pub use self::x86::{LinkedPtr, LinkedUsize, LinkedIsize, LinkedBool};
-    pub const IS_LOCK_FREE: bool = true;
-}
-
-#[cfg(target_arch = "aarch64")]
-mod exclusive_target {
-    mod aarch64;
-    pub use self::aarch64::{ExclusivePtr, ExclusiveUsize, ExclusiveIsize, ExclusiveBool};
-    pub use self::aarch64::{LinkedPtr, LinkedUsize, LinkedIsize, LinkedBool};
+    mod llsc_impl;
+    pub use self::llsc_impl::{ExclusivePtr, ExclusiveUsize, ExclusiveIsize, ExclusiveBool};
+    pub use self::llsc_impl::{LinkedPtr, LinkedUsize, LinkedIsize, LinkedBool};
     pub const IS_LOCK_FREE: bool = true;
 }
 
@@ -30,8 +21,7 @@ mod exclusive_target {
               target_arch = "x86",
               target_arch = "aarch64",
               target_arch = "arm",
-              target_arch = "powerpc",
-              target_arch = "powerpc64")))]
+              target_arch = "powerpc")))]
 mod exclusive_target {
     pub use super::generic::{ExclusivePtr, ExclusiveUsize, ExclusiveIsize, ExclusiveBool};
     pub use super::generic::{LinkedPtr, LinkedUsize, LinkedIsize, LinkedBool};
